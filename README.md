@@ -239,10 +239,5 @@ You can tweak:
 
 MIT License
 
----
-
-## 👨‍💻 Author
-
-**Lingeshkumar P**
 
 
