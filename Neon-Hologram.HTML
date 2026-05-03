@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON HOLOGRAM | LIVING ENERGY</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000; 
+            font-family: 'Segoe UI', sans-serif;
+            user-select: none;
+        }
+
+        /* HUD Overlay */
+        #hud {
+            position: absolute;
+            top: 20px; left: 20px;
+            color: rgba(0, 255, 204, 0.6);
+            font-family: 'Courier New', monospace;
+            z-index: 10;
+            pointer-events: none;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+        
+        .hud-line { margin-bottom: 5px; }
+        .highlight { color: #00ffcc; text-shadow: 0 0 10px rgba(0,255,204,0.5); }
+
+        /* Controls */
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 20;
+            background: rgba(0, 10, 10, 0.8);
+            padding: 12px 25px;
+            border-radius: 40px;
+            border: 1px solid rgba(0, 255, 204, 0.2);
+            backdrop-filter: blur(10px);
+        }
+
+        button {
+            background: transparent;
+            border: none;
+            color: rgba(0, 255, 204, 0.6);
+            padding: 5px 10px;
+            cursor: pointer;
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: 600;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+
+        button:hover { color: #fff; text-shadow: 0 0 8px #00ffcc; }
+        button.active { color: #00ffcc; text-shadow: 0 0 15px #00ffcc; border-bottom: 1px solid #00ffcc; }
+
+        /* Camera Feed */
+        #cam-container {
+            position: absolute;
+            bottom: 20px; right: 20px;
+            width: 160px; height: 120px;
+            border-radius: 8px;
+            overflow: hidden;
+            opacity: 0.3;
+            z-index: 5;
+            transition: opacity 0.3s, box-shadow 0.3s;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        #cam-container.active {
+            opacity: 0.9;
+            border-color: #00ffcc;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.2);
+        }
+
+        video {
+            width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/examples/": "https://unpkg.com/three@0.128.0/examples/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="hud-line">VISUAL CORE: <span class="highlight">ONLINE</span></div>
+        <div class="hud-line" id="status-text">INITIALIZING SENSORS...</div>
+    </div>
+
+    <div id="controls">
+        <button onclick="setShape('Saturn')" class="active">Saturn</button>
+        <button onclick="setShape('Galaxy')">Galaxy</button>
+        <button onclick="setShape('Sphere')">Sphere</button>
+        <button onclick="setShape('Vortex')">Vortex</button>
+        <button onclick="setShape('Helix')">Helix</button>
+        <button onclick="setShape('HyperCube')">HyperCube</button>
+    </div>
+
+    <div id="cam-container">
+        <video id="input_video"></video>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+        import { AfterimagePass } from 'three/examples/jsm/postprocessing/AfterimagePass.js';
+
+        // --- CONFIG ---
+        const CONFIG = {
+            count: 45000,
+            size: 0.18,
+            color: 0x00ffcc,
+            bloomStrength: 1.4,
+            trail: 0.6 
+        };
+
+        const state = {
+            rotX: 0, rotY: 0,
+            targetRotX: 0, targetRotY: 0,
+            zoom: 25, targetZoom: 25, 
+            
+            // Gesture States
+            handDetected: false,
+            isFist: false,
+            
+            // --- CYCLE LOGIC ---
+            cycleActive: false,
+            cycleStartTime: 0,
+            
+            // --- TRANSITION LOGIC ---
+            transitionStartTime: 0,
+            transitioning: false,
+
+            // --- PHYSICS SETTINGS ---
+            baseSuction: 0.005, 
+            friction: 0.94, 
+            boundary: 60 
+        };
+
+        // --- SCENE ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = state.zoom;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        // --- POST PROCESSING ---
+        const composer = new EffectComposer(renderer);
+        composer.addPass(new RenderPass(scene, camera));
+
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0;
+        bloomPass.strength = CONFIG.bloomStrength;
+        bloomPass.radius = 0.5;
+        composer.addPass(bloomPass);
+
+        const afterimagePass = new AfterimagePass(CONFIG.trail);
+        composer.addPass(afterimagePass);
+
+        // --- PARTICLES ---
+        const geometry = new THREE.BufferGeometry();
+        const pos = new Float32Array(CONFIG.count * 3);
+        const targetPos = new Float32Array(CONFIG.count * 3);
+        const currentVelocities = new Float32Array(CONFIG.count * 3);
+        const colors = new Float32Array(CONFIG.count * 3);
+        const baseColor = new THREE.Color(CONFIG.color);
+
+        for (let i = 0; i < CONFIG.count; i++) {
+            const x = (Math.random()-0.5) * 50;
+            const y = (Math.random()-0.5) * 50;
+            const z = (Math.random()-0.5) * 50;
+            pos[i*3] = x; pos[i*3+1] = y; pos[i*3+2] = z;
+            targetPos[i*3] = x; targetPos[i*3+1] = y; targetPos[i*3+2] = z;
+            
+            // Initial gas velocity
+            currentVelocities[i*3] = (Math.random()-0.5) * 0.1;
+            currentVelocities[i*3+1] = (Math.random()-0.5) * 0.1;
+            currentVelocities[i*3+2] = (Math.random()-0.5) * 0.1;
+            
+            colors[i*3] = baseColor.r;
+            colors[i*3+1] = baseColor.g;
+            colors[i*3+2] = baseColor.b;
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        const texture = new THREE.TextureLoader().load('https://threejs.org/examples/textures/sprites/spark1.png');
+        const material = new THREE.PointsMaterial({
+            size: CONFIG.size,
+            map: texture,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            transparent: true,
+            opacity: 1.0
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // --- SHAPE GENERATORS ---
+        const shapes = {
+            Saturn: (i) => {
+                if (i < CONFIG.count * 0.3) {
+                    const r = 6;
+                    const u = Math.random() * Math.PI * 2;
+                    const v = Math.acos(2 * Math.random() - 1);
+                    return { x: r * Math.sin(v) * Math.cos(u), y: r * Math.sin(v) * Math.sin(u), z: r * Math.cos(v), c: new THREE.Color(0x00ffcc) };
+                } else {
+                    const angle = Math.random() * Math.PI * 2;
+                    const r = 9 + Math.random() * 8;
+                    const x = Math.cos(angle) * r;
+                    const z = Math.sin(angle) * r;
+                    const y = (Math.random()-0.5) * 0.5;
+                    return { x: x, y: y * Math.cos(0.5) - z * Math.sin(0.5), z: y * Math.sin(0.5) + z * Math.cos(0.5), c: new THREE.Color(r < 12 ? 0xff00ff : 0x00ccff) };
+                }
+            },
+            Galaxy: (i) => {
+                const arms = 5;
+                const spin = i / CONFIG.count * arms;
+                const r = Math.random() * 25;
+                const angle = spin * Math.PI * 2 + (10/r);
+                return { x: Math.cos(angle) * r, y: (Math.random()-0.5) * (Math.max(0, 5 - r*0.2)), z: Math.sin(angle) * r, c: new THREE.Color(r < 5 ? 0xffffff : 0xaa00ff) };
+            },
+            Sphere: (i) => {
+                const r = 14;
+                const u = Math.random() * Math.PI * 2;
+                const v = Math.acos(2 * Math.random() - 1);
+                return { x: r * Math.sin(v) * Math.cos(u), y: r * Math.sin(v) * Math.sin(u), z: r * Math.cos(v), c: new THREE.Color(0xffaa00) };
+            },
+            Vortex: (i) => {
+                const r = (i / CONFIG.count) * 30;
+                const angle = i * 0.1;
+                return { x: Math.cos(angle) * r, y: (Math.random()-0.5) * 10, z: Math.sin(angle) * r, c: new THREE.Color(0x00ff00) };
+            },
+            Helix: (i) => {
+                const h = (i / CONFIG.count) * 40 - 20; 
+                const angle = i * 0.1;
+                const r = 8;
+                const offset = (i % 2 === 0) ? 0 : Math.PI; 
+                return { x: Math.cos(angle + offset) * r, y: h, z: Math.sin(angle + offset) * r, c: new THREE.Color(i % 2 === 0 ? 0x00ffff : 0xff00aa) };
+            },
+            HyperCube: (i) => {
+                const side = 24;
+                const half = side / 2;
+                return { 
+                    x: (Math.random() * side) - half, 
+                    y: (Math.random() * side) - half, 
+                    z: (Math.random() * side) - half, 
+                    c: new THREE.Color(0xffffff) 
+                };
+            }
+        };
+
+        window.setShape = (name) => {
+            const gen = shapes[name];
+            const cArr = geometry.attributes.color.array;
+            for(let i=0; i<CONFIG.count; i++){
+                const data = gen(i);
+                targetPos[i*3] = data.x;
+                targetPos[i*3+1] = data.y;
+                targetPos[i*3+2] = data.z;
+                cArr[i*3] = data.c.r;
+                cArr[i*3+1] = data.c.g;
+                cArr[i*3+2] = data.c.b;
+            }
+            geometry.attributes.color.needsUpdate = true;
+            document.querySelectorAll('button').forEach(b => {
+                b.classList.remove('active');
+                if(b.innerText.includes(name)) b.classList.add('active');
+            });
+        };
+        window.setShape('Saturn');
+
+        // --- GESTURE LOGIC ---
+        function detectGestures(landmarks) {
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const wrist = landmarks[0];
+            const middleMCP = landmarks[9];
+
+            // 1. ROTATION
+            const x = indexTip.x - 0.5;
+            const y = indexTip.y - 0.5;
+            state.targetRotY += x * 0.16; 
+            state.targetRotX += y * 0.16; 
+
+            // 2. FIST DETECTION
+            const tips = [landmarks[8], landmarks[12], landmarks[16], landmarks[20]];
+            let avgDist = 0;
+            tips.forEach(tip => avgDist += Math.hypot(tip.x - wrist.x, tip.y - wrist.y));
+            avgDist /= 4;
+
+            const FIST_THRESHOLD = 0.2; 
+            const OPEN_THRESHOLD = 0.3;
+
+            if (avgDist < FIST_THRESHOLD) {
+                if (!state.isFist) {
+                    state.isFist = true; 
+                    document.getElementById('status-text').innerHTML = "STATUS: <span style='color:#ff0000'>CHARGING...</span>";
+                }
+            } else if (avgDist > OPEN_THRESHOLD) {
+                if (state.isFist) {
+                    state.isFist = false; 
+                    // TRIGGER CYCLE
+                    state.cycleActive = true;
+                    state.cycleStartTime = Date.now();
+                    
+                    // Small impulse to wake them up
+                    for(let i=0; i<CONFIG.count; i++) {
+                        const ix = i*3;
+                        currentVelocities[ix] += (Math.random()-0.5) * 3.0; 
+                        currentVelocities[ix+1] += (Math.random()-0.5) * 3.0;
+                        currentVelocities[ix+2] += (Math.random()-0.5) * 3.0;
+                    }
+                    
+                    document.getElementById('status-text').innerHTML = "STATUS: <span class='highlight'>DISPERSION SEQUENCE</span>";
+                }
+            }
+
+            // 3. ZOOM (NORMALIZED HAND-SCALE RATIO)
+            // Use ratio of pinch distance to hand size (wrist to middle knuckle)
+            // This prevents zooming just by moving hand closer/further
+            const scaleRef = Math.hypot(wrist.x - middleMCP.x, wrist.y - middleMCP.y);
+            const pinchRaw = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+            const pinchRatio = pinchRaw / scaleRef;
+
+            if (pinchRatio > 0.1) {
+                // Tuned for responsiveness
+                let z = 40 - (pinchRatio - 0.2) * 100;
+                z = Math.max(5, Math.min(40, z));
+                state.targetZoom += (z - state.targetZoom) * 0.3; 
+            }
+        }
+
+        // --- ANIMATION ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Camera Smoothing
+            state.rotX += (state.targetRotX - state.rotX) * 0.05;
+            state.rotY += (state.targetRotY - state.rotY) * 0.05;
+            state.zoom += (state.targetZoom - state.zoom) * 0.1;
+
+            particles.rotation.x = state.rotX;
+            particles.rotation.y = state.rotY;
+            camera.position.z = state.zoom;
+
+            // PHYSICS LOOP
+            const positions = geometry.attributes.position.array;
+            const limit = state.boundary;
+            
+            const now = Date.now();
+            const time = now * 0.0015; // Slow time for breathing
+
+            let suctionMultiplier = 1.0;
+            let activeMode = "ASSEMBLY"; 
+
+            // --- STATE MACHINE ---
+            if (state.cycleActive) {
+                // BOOM CYCLE LOGIC
+                const elapsed = (now - state.cycleStartTime) / 1000;
+
+                if (elapsed < 5.0) {
+                    // PHASE 1: IDLE GAS (0-5s)
+                    activeMode = "GAS";
+                    document.getElementById('status-text').innerHTML = `STATUS: <span class='highlight'>IDLE STATE... ${(5-elapsed).toFixed(1)}s</span>`;
+                } else if (elapsed < 8.5) { // 5s + 3.5s
+                    // PHASE 2: ASSEMBLING (5s-8.5s)
+                    activeMode = "ASSEMBLY";
+                    const p = (elapsed - 5.0) / 3.5;
+                    suctionMultiplier = p * p * p; // Cubic Easing
+                    
+                    // Cinematic Zoom Out
+                    state.targetZoom += (40 - state.targetZoom) * 0.02;
+
+                    document.getElementById('status-text').innerHTML = `STATUS: <span class='highlight'>ASSEMBLING... ${(8.5-elapsed).toFixed(1)}s</span>`;
+                } else {
+                    // PHASE 3: TRACKING ACTIVE
+                    state.cycleActive = false;
+                    document.getElementById('status-text').innerHTML = "STATUS: <span class='highlight'>TRACKING ACTIVE MODE</span>";
+                }
+            } 
+            else if (!state.handDetected && !state.isMouseDown) {
+                // NO HAND -> GAS
+                activeMode = "GAS";
+                state.transitioning = false;
+            } 
+            else {
+                // HAND DETECTED -> TRANSITION TO ASSEMBLY
+                if (!state.transitioning) {
+                    state.transitionStartTime = now;
+                    state.transitioning = true;
+                }
+                const tElapsed = (now - state.transitionStartTime) / 1000;
+                if (tElapsed < 3.5) {
+                    const p = tElapsed / 3.5;
+                    suctionMultiplier = p * p * p;
+                    if(!state.cycleActive) document.getElementById('status-text').innerHTML = "STATUS: <span class='highlight'>ASSEMBLING...</span>";
+                } else {
+                     suctionMultiplier = 1.0;
+                     if(!state.cycleActive && !state.isFist) document.getElementById('status-text').innerHTML = "STATUS: <span class='highlight'>TRACKING ACTIVE MODE</span>";
+                }
+            }
+
+            // --- PHYSICS ENGINE ---
+            for (let i = 0; i < CONFIG.count; i++) {
+                const ix = i * 3;
+                
+                if (activeMode === "ASSEMBLY") {
+                    // ASSEMBLY PHYSICS (Viscous Suction)
+                    let tx = targetPos[ix];
+                    let ty = targetPos[ix+1];
+                    let tz = targetPos[ix+2];
+
+                    // NEW: ORGANIC BREATHING (Sine Wave Offset)
+                    // Each particle moves slightly on its own sine wave based on index
+                    tx += Math.sin(time + ix * 0.01) * 0.3;
+                    ty += Math.cos(time + ix * 0.01) * 0.3;
+                    tz += Math.sin(time + ix * 0.02) * 0.3;
+
+                    if (state.isFist) { // Charging Jitter
+                        tx += (Math.random()-0.5) * 1.5;
+                        ty += (Math.random()-0.5) * 1.5;
+                        tz += (Math.random()-0.5) * 1.5;
+                    }
+
+                    const dx = tx - positions[ix];
+                    const dy = ty - positions[ix+1];
+                    const dz = tz - positions[ix+2];
+
+                    const currentSuction = state.baseSuction * suctionMultiplier;
+
+                    currentVelocities[ix] += dx * currentSuction;
+                    currentVelocities[ix+1] += dy * currentSuction;
+                    currentVelocities[ix+2] += dz * currentSuction;
+
+                    currentVelocities[ix] *= state.friction;
+                    currentVelocities[ix+1] *= state.friction;
+                    currentVelocities[ix+2] *= state.friction;
+
+                } else {
+                    // GAS PHYSICS (Brownian Motion)
+                    currentVelocities[ix] += (Math.random()-0.5) * 0.02;
+                    currentVelocities[ix+1] += (Math.random()-0.5) * 0.02;
+                    currentVelocities[ix+2] += (Math.random()-0.5) * 0.02;
+                    
+                    currentVelocities[ix] *= 0.99;
+                    currentVelocities[ix+1] *= 0.99;
+                    currentVelocities[ix+2] *= 0.99;
+                    
+                    // Box Bounds
+                    const px = positions[ix];
+                    const py = positions[ix+1];
+                    const pz = positions[ix+2];
+                    
+                    if (px > limit)  currentVelocities[ix] = -Math.abs(currentVelocities[ix]);
+                    if (px < -limit) currentVelocities[ix] = Math.abs(currentVelocities[ix]);
+                    
+                    if (py > limit)  currentVelocities[ix+1] = -Math.abs(currentVelocities[ix+1]);
+                    if (py < -limit) currentVelocities[ix+1] = Math.abs(currentVelocities[ix+1]);
+                    
+                    if (pz > limit)  currentVelocities[ix+2] = -Math.abs(currentVelocities[ix+2]);
+                    if (pz < -limit) currentVelocities[ix+2] = Math.abs(currentVelocities[ix+2]);
+                }
+
+                positions[ix] += currentVelocities[ix];
+                positions[ix+1] += currentVelocities[ix+1];
+                positions[ix+2] += currentVelocities[ix+2];
+            }
+            
+            geometry.attributes.position.needsUpdate = true;
+            composer.render();
+        }
+
+        // --- SETUP ---
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        
+        hands.onResults((results) => {
+            const status = document.getElementById('status-text');
+            const cam = document.getElementById('cam-container');
+            
+            if(results.multiHandLandmarks.length > 0) {
+                state.handDetected = true;
+                cam.classList.add('active');
+                detectGestures(results.multiHandLandmarks[0]);
+            } else {
+                state.handDetected = false;
+                cam.classList.remove('active');
+                if(!state.cycleActive) status.innerHTML = "STATUS: IDLE (GAS MODE)";
+            }
+        });
+
+        const video = document.getElementById('input_video');
+        const cam = new Camera(video, {
+            onFrame: async () => { await hands.send({image: video}); },
+            width: 640, height: 480
+        });
+        cam.start();
+        
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Mouse Support
+        window.addEventListener('mousedown', () => state.isMouseDown = true);
+        window.addEventListener('mouseup', () => state.isMouseDown = false);
+        window.addEventListener('mousemove', (e) => {
+            if(!state.handDetected && state.isMouseDown) {
+                state.targetRotY += e.movementX * 0.01;
+                state.targetRotX += e.movementY * 0.01;
+            }
+        });
+        window.addEventListener('wheel', (e) => {
+            state.targetZoom += e.deltaY * 0.05;
+            state.targetZoom = Math.max(5, Math.min(40, state.targetZoom));
+        });
+
+        animate();
+    </script>
+</body>
+</html>
